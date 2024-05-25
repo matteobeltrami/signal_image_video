@@ -527,7 +527,6 @@ class MicroMind(ABC):
                 self.accelerator.backward(loss)
                 self.opt.step()
 
-                loss_epoch += loss.item()
                 if hasattr(self, "lr_sched"):
                     # ok for cos_lr
                     self.lr_sched.step()

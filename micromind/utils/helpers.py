@@ -31,8 +31,7 @@ def override_conf(hparams: Dict):
     """
     parser = argparse.ArgumentParser(description="MicroMind experiment configuration.")
     for key, value in hparams.items():
-        parser.add_argument(f"--{key}", type=type(value), default=value)
-
+        parser.add_argument(f"--{key}", type=str2bool if isinstance(value, bool) else type(value), default=value) 
     args, extra_args = parser.parse_known_args()
     for key, value in vars(args).items():
         if value is not None:
@@ -78,3 +77,14 @@ def get_logger():
     logger.add(sys.stderr, format=fmt)
 
     return logger
+
+
+def str2bool(v):
+    if isinstance(v, bool):
+        return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
