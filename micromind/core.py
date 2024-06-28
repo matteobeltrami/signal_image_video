@@ -32,7 +32,7 @@ default_cfg = {
     "lr": 0.001,  # this is ignored if you are overriding the configure_optimizers
     "debug": False,
     "log_wandb": False,
-    "wandb_resume": 'auto' # Resume run if prev crashed, otherwise new run. ["allow", "must", "never", "auto" or None]
+    "wandb_resume": "auto",  # ["allow", "must", "never", "auto" or None]
 }
 
 
@@ -384,7 +384,7 @@ class MicroMind(ABC):
 
     def on_train_start(self):
         """Initializes the optimizer, modules and puts the networks on the right
-        devices. Optionally loads checkpoint if already present. It also start wandb 
+        devices. Optionally loads checkpoint if already present. It also start wandb
         logger if selected.
 
         This function gets executed at the beginning of every training.
@@ -397,11 +397,11 @@ class MicroMind(ABC):
             import wandb
 
             self.wlog = wandb.init(
-                project=self.hparams.project_name, 
+                project=self.hparams.project_name,
                 name=self.hparams.experiment_name,
                 resume=self.hparams.wandb_resume,
                 id=self.hparams.experiment_name,
-                config=self.hparams
+                config=self.hparams,
             )
 
         init_opt = self.configure_optimizers()
@@ -580,8 +580,8 @@ class MicroMind(ABC):
 
             train_metrics.update({"train_loss": loss_epoch / (idx + 1)})
 
-            if self.hparams.log_wandb: # wandb log train loss
-                    self.wlog.log(train_metrics)
+            if self.hparams.log_wandb:  # wandb log train loss
+                self.wlog.log(train_metrics)
 
             if "val" in datasets:
                 val_metrics = self.validate()
@@ -597,7 +597,7 @@ class MicroMind(ABC):
             else:
                 val_metrics = train_metrics.update({"val_loss": loss_epoch / (idx + 1)})
 
-            if self.hparams.log_wandb: # wandb log val loss
+            if self.hparams.log_wandb:  # wandb log val loss
                 self.wlog.log(val_metrics)
 
             if e >= 1 and self.debug:
