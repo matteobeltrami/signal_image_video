@@ -580,9 +580,6 @@ class MicroMind(ABC):
 
             train_metrics.update({"train_loss": loss_epoch / (idx + 1)})
 
-            if self.hparams.log_wandb:  # wandb log train loss
-                self.wlog.log(train_metrics)
-
             if "val" in datasets:
                 val_metrics = self.validate()
                 if (
@@ -597,7 +594,8 @@ class MicroMind(ABC):
             else:
                 val_metrics = train_metrics.update({"val_loss": loss_epoch / (idx + 1)})
 
-            if self.hparams.log_wandb:  # wandb log val loss
+            if self.hparams.log_wandb:  # wandb log
+                self.wlog.log(train_metrics)
                 self.wlog.log(val_metrics)
 
             if e >= 1 and self.debug:
