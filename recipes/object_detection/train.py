@@ -28,6 +28,132 @@ import os
 from micromind.utils.yolo import get_variant_multiples
 from validation.validator import DetectionValidator
 
+from torch.autograd import Variable
+from canny import Net
+from clustering import KMeans
+from ultralytics import YOLO as YOLOseg
+
+def grayscale(batch):
+    with torch.no_grad():
+        gray_images = 0.299 * batch[:, 0, :, :] + 0.587 * batch[:, 1, :, :] + 0.114 * batch[:, 2, :, :]
+        gray_images = gray_images.unsqueeze(1)
+    return gray_images
+
+def rgb_to_hsv(batch):
+    with torch.no_grad():
+        r, g, b = batch[:, 0, :, :], batch[:, 1, :, :], batch[:, 2, :, :]
+        max_rgb, _ = torch.max(batch, dim=1)
+        min_rgb, _ = torch.min(batch, dim=1)
+        delta = max_rgb - min_rgb
+        hue = torch.zeros_like(max_rgb)
+        mask = delta != 0
+        hue[mask & (max_rgb == r)] = (60 * (g[mask & (max_rgb == r)] - b[mask & (max_rgb == r)]) / delta[mask & (max_rgb == r)]) % 360
+        hue[mask & (max_rgb == g)] = (60 * (b[mask & (max_rgb == g)] - r[mask & (max_rgb == g)]) / delta[mask & (max_rgb == g)]) + 120
+        hue[mask & (max_rgb == b)] = (60 * (r[mask & (max_rgb == b)] - g[mask & (max_rgb == b)]) / delta[mask & (max_rgb == b)]) + 240
+        hue = hue / 360.0
+        saturation = torch.zeros_like(max_rgb)
+        saturation[max_rgb != 0] = delta[max_rgb != 0] / max_rgb[max_rgb != 0]
+        value = max_rgb
+        hsv_images = torch.stack([hue, saturation, value], dim=1)
+    return hsv_images
+
+def hsv_to_rgb(batch): # just to test
+    with torch.no_grad():
+        h, s, v = batch[:, 0, :, :], batch[:, 1, :, :], batch[:, 2, :, :]
+        h = h * 360.0
+        c = s * v
+        x = c * (1 - torch.abs((h / 60.0) % 2 - 1))
+        m = v - c
+        z = torch.zeros_like(h)
+        mask1 = (h >= 0)   & (h < 60)
+        mask2 = (h >= 60)  & (h < 120)
+        mask3 = (h >= 120) & (h < 180)
+        mask4 = (h >= 180) & (h < 240)
+        mask5 = (h >= 240) & (h < 300)
+        mask6 = (h >= 300) & (h < 360)
+        
+        r = torch.zeros_like(h)
+        g = torch.zeros_like(h)
+        b = torch.zeros_like(h)
+        
+        r[mask1] = c[mask1]
+        g[mask1] = x[mask1]
+        b[mask1] = z[mask1]
+        
+        r[mask2] = x[mask2]
+        g[mask2] = c[mask2]
+        b[mask2] = z[mask2]
+        
+        r[mask3] = z[mask3]
+        g[mask3] = c[mask3]
+        b[mask3] = x[mask3]
+        
+        r[mask4] = z[mask4]
+        g[mask4] = x[mask4]
+        b[mask4] = c[mask4]
+        
+        r[mask5] = x[mask5]
+        g[mask5] = z[mask5]
+        b[mask5] = c[mask5]
+        
+        r[mask6] = c[mask6]
+        g[mask6] = z[mask6]
+        b[mask6] = x[mask6]
+        
+        r = (r + m).clamp(0, 1)
+        g = (g + m).clamp(0, 1)
+        b = (b + m).clamp(0, 1)
+        rgb_images = torch.stack([r, g, b], dim=1)
+    return rgb_images
+
+def canny(batch, device, use_cuda=True):
+    canny_images = []
+    net = Net(threshold=3.0, use_cuda=use_cuda)
+    if use_cuda:
+        net.cuda()
+    net.eval()
+    
+    with torch.no_grad():
+        for i in range(len(batch)):
+            data = Variable(batch[i].unsqueeze(0)).to(device)
+            canny_tensor = net(data)[4]  # the thresholded one
+            canny_tensor /= canny_tensor.max()
+            canny_images.append(canny_tensor)
+    
+    return torch.cat(canny_images, dim=0)
+
+def segment(batch, segmentation_model, device):
+    results = []
+    with torch.no_grad():
+        for i in range(len(batch)):
+            result = segmentation_model(batch[i].unsqueeze(0), verbose=False)
+            try:
+                result = torch.any(result[0].masks.data, dim=0, keepdim=True)
+            except AttributeError:
+                result = torch.zeros((1, *batch[i].shape[1:]), dtype=torch.bool)
+            results.append(result.to(device))
+
+    segmented_batch = torch.cat(results, dim=0).unsqueeze(1).float()
+    return segmented_batch
+
+def kmeans_clustering(batch, k=3, n_iters=10):
+    results = []
+    with torch.no_grad():
+        for i in range(len(batch)):
+            shape = batch[i].shape
+            pixels = batch[i].permute(1, 2, 0).reshape(-1, 3)
+            kmeans = KMeans(X=pixels, k=k, n_iters=n_iters, p=2)
+            kmeans.train(pixels)
+            labels = kmeans.predict(pixels)
+            segmented_image = kmeans.train_pts[labels]
+            segmented_image = segmented_image.reshape(shape[1], shape[2], shape[0]).permute(2, 0, 1)
+            if torch.isnan(segmented_image).all():
+                segmented_image = torch.zeros_like(segmented_image)
+            results.append(segmented_image)
+
+    clustered_batch = torch.stack(results, dim=0)
+    return clustered_batch
+
 
 class YOLO(mm.MicroMind):
     def __init__(self, m_cfg, hparams, *args, **kwargs):
@@ -66,6 +192,7 @@ class YOLO(mm.MicroMind):
             hparams.num_classes, filters=head_filters, heads=hparams.heads
         )
         self.criterion = Loss(self.m_cfg, self.modules["head"], self.device)
+        self.segmentation_model = YOLOseg("yolov8n-seg.pt")  # load an official model
 
         print("Number of parameters for each module:")
         print(self.compute_params())
@@ -124,7 +251,7 @@ class YOLO(mm.MicroMind):
 
         return (c1, c2), neck_filters, up, head_filters
 
-    def preprocess_batch(self, batch):
+    def preprocess_batch(self, batch, skip_augs=False):
         """Preprocesses a batch of images by scaling and converting to float."""
         preprocessed_batch = {}
         preprocessed_batch["img"] = (
@@ -134,26 +261,29 @@ class YOLO(mm.MicroMind):
             if isinstance(batch[k], torch.Tensor) and k != "img":
                 preprocessed_batch[k] = batch[k].to(self.device)
 
+        if not skip_augs:
+
+            hsv_batch = rgb_to_hsv(preprocessed_batch["img"])
+            grayscale_batch = grayscale(preprocessed_batch["img"])
+            canny_batch = canny(preprocessed_batch["img"], self.device).detach()
+            segmented_batch = segment(preprocessed_batch["img"], self.segmentation_model, self.device).detach()
+            clustered_batch = kmeans_clustering(preprocessed_batch["img"]).detach()
+
+            # NOTE: this is to modify based on the type of experiment you decide to train. 
+            # NOTE: This needs to be coherent with the `input_shape` parameter inside the `cfg/yolo_phinet.py` file.
+            final_batch = torch.cat((preprocessed_batch["img"], hsv_batch, grayscale_batch, canny_batch, segmented_batch, clustered_batch), dim=1)
+            
+            breakpoint()
+            preprocessed_batch["img"] = final_batch
+
         return preprocessed_batch
 
     def forward(self, batch):
         """Runs the forward method by calling every module."""
-        if self.modules.training:
-            preprocessed_batch = self.preprocess_batch(batch)
-            backbone = self.modules["backbone"](
-                preprocessed_batch["img"].to(self.device)
-            )
-        else:
-
-            if torch.is_tensor(batch):
-                backbone = self.modules["backbone"](batch)
-                neck_input = backbone[1]
-                neck_input.append(self.modules["sppf"](backbone[0]))
-                neck = self.modules["neck"](*neck_input)
-                head = self.modules["head"](neck)
-                return head
-
-            backbone = self.modules["backbone"](batch["img"] / 255)
+        preprocessed_batch = self.preprocess_batch(batch)
+        backbone = self.modules["backbone"](
+            preprocessed_batch["img"].to(self.device)
+        )
 
         neck_input = backbone[1]
         neck_input.append(self.modules["sppf"](backbone[0]))
@@ -164,7 +294,7 @@ class YOLO(mm.MicroMind):
 
     def compute_loss(self, pred, batch):
         """Computes the loss."""
-        preprocessed_batch = self.preprocess_batch(batch)
+        preprocessed_batch = self.preprocess_batch(batch, skip_augs=True)
 
         lossi_sum, lossi = self.criterion(
             pred,
@@ -298,28 +428,6 @@ class YOLO(mm.MicroMind):
         Precision-Confidence, Precision-Recall, Recall-Confidence curves and the
         predictions and labels of the first three batches of images.
         """
-        args = dict(
-            model="yolov8n.pt", data=hparams.data_cfg, verbose=False, plots=False
-        )
-        validator = DetectionValidator(args=args)
-
-        validator(model=self)
-
-        val_metrics = [
-            validator.metrics.box.map * 100,
-            validator.metrics.box.map50 * 100,
-            validator.metrics.box.map75 * 100,
-        ]
-        metrics_file = os.path.join(exp_folder, "val_log.txt")
-        metrics_info = (
-            f"Epoch {self.current_epoch}: "
-            f"mAP50-95(B): {round(val_metrics[0], 3)}%; "
-            f"mAP50(B): {round(val_metrics[1], 3)}%; "
-            f"mAP75(B): {round(val_metrics[2], 3)}%\n"
-        )
-
-        with open(metrics_file, "a") as file:
-            file.write(metrics_info)
         return
 
 

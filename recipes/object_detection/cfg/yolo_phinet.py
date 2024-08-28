@@ -9,7 +9,7 @@ Authors:
 # Data configuration
 batch_size = 8
 data_cfg = "cfg/data/VOC.yaml"
-data_dir = "datasets/coco"
+data_dir = "datasets/VOC"
 epochs = 350
 num_classes = 80
 
@@ -29,4 +29,4 @@ return_layers = [6, 8]
 # Placeholder for inference
 ckpt_pretrained = ""
 output_dir = "detection_output"
-coco_names = "cfg/data/coco.names"
+coco_names = "cfg/data/voc.names"
