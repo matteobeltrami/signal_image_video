@@ -1,62 +1,58 @@
-[![Python version: 3.8 | 3.9 | 3.10](https://img.shields.io/badge/python-3.8%20|3.9%20|%203.10-blue)](https://www.python.org/downloads/)
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://github.com/fpaissan/micromind/blob/main/LICENSE)
-[![PyPI version](https://img.shields.io/pypi/v/micromind)](https://pypi.org/project/micromind/)
+## Signal, Image and Video project
 
-This is the official repo of `micromind`, a toolkit that aims at bridging two communities: artificial intelligence and embedded systems. `micromind` is based on [PyTorch](https://pytorch.org) and provides exportability for the supported models in ONNX, Intel OpenVINO, and TFLite.
+In this notebook we analyze the impact of different types of image preprocessing on the performance of an object detection neural network.
+In particular, for this analysis, a network incorporated in the [micromind](https://github.com/micromind-toolkit/micromind) toolkit and developed within the [E3DA](https://e3da.fbk.eu/) laboratory of the Bruno Kessler foundation was used as a detection model.
+The peculiarity of this object detection model is that it requires a reduced computational resource, while maintaining robust performance.
 
----------------------------------------------------------------------------------------------------------
+In order to reproduce the results and the analysis you can follow some simple steps.
 
-## 💡 Key features
+If you just want to read and understand the analysis you can simply run the [`analysis.ipynb`](https://github.com/matteobeltrami/signal_image_video/blob/train_optim/analysis.ipynb) notebook using the pre-trained models available in the `models` folder.
 
-- Smooth flow from research to deployment;
-- Support for multimedia analytics recipes (image classification, sound event detection, etc);
-- Detailed API documentation;
-- Tutorials for embedded deployment;
+If instead you want to train and evaluate the models on your own, brace yourself and follow these simple steps: 
 
----------------------------------------------------------------------------------------------------------
 
-## 🛠️️ Installation
-
-### Using Pip
-
-First of all, install [Python 3.8 or later](https://www.python.org). Open a terminal and run:
-
+### Setup the environment
+First of all create and activate your python environment:
 ```
-pip install micromind
-```
-for the basic install. To install `micromind` with the full exportability features, run
-
-```
-pip install micromind[conversion]
+conda create -n siv python=3.9
+conda activate siv
 ```
 
-### From source
-
-First of all, install [Python 3.9 or later](https://www.python.org).
-Clone or download and extract the repository, navigate to `<path-to-repository>`, open a
-terminal and run:
-
+Clone the repository:
 ```
-pip install -e .
-```
-for the basic install. To install `micromind` with the full exportability features, run
-
-```
-pip install -e .[conversion]
+git clone https://github.com/matteobeltrami/signal_image_video.git
 ```
 
-### Training networks with recipes
+Open micromind and install it in editable mode:
+```
+cd signal_image_video/micromind
+pip install -e . 
+```
 
-After the installation, get started looking at the examples and the docs!
+Install the extra requirements for the object detection recipe:
+```
+pip install -r extra_requirements
+```
 
-### Export your model and run it on your MCU
-Check out [this](https://docs.google.com/document/d/1zt5urvNtI9VSJcoJdIeo10YrdH-tZNcS4JHbT1z5udI/edit?usp=sharing)
-tutorial and have fun deploying your network on MCU!
+### Train your network
+Inside `recipes/object_detection` launch
+```
+python train.py cfg/yolo_phinet.py --experiment_name=<EXPERIMENT>
+```
+making sure to set the right arguments (most importantly the `input_shape` one) inside the `cfg/yolo_phinet.py` configuration file and the right preprocessing inside the `train.py` script.
 
----------------------------------------------------------------------------------------------------------
+### Evaluate your network
+Inside `recipes/object_detection` launch
+```
+python validate.py cfg/yolo_phinet.py --experiment_name=<EXPERIMENT>
+```
+making sure to set the right arguments (most importantly the `input_shape` one) inside the `cfg/yolo_phinet.py` configuration file and the right preprocessing inside the `validate.py` script.
 
-## 📧 Contact
+#### Last but not least
+Have fun playing with all the potential this toolkit has to offer. 
+Read the [micromind.md](https://github.com/matteobeltrami/signal_image_video/blob/train_optim/micromind.md) presentation file and the [documentation](https://micromind-toolkit.github.io/docs/) for more info on micromind.
 
-[francescopaissan@gmail.com](mailto:francescopaissan@gmail.com)
-
----------------------------------------------------------------------------------------------------------
+## Contacts
+Project developed by Matteo Beltrami.
+- email: beltramimatteo01@gmail.com
+- github: [@matteobeltrami](https://github.com/matteobeltrami)
