@@ -1,0 +1,3 @@
+epoch: 150
+metric: 46.38478979193914
+metric_key: val_loss

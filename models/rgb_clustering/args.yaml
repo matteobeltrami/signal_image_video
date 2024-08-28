@@ -1,0 +1,34 @@
+__doc__: "\nYOLOPhiNet training configuration.\n\nAuthors:\n    - Matteo Beltrami,\
+  \ 2023\n    - Francesco Paissan, 2023\n"
+alpha: 1.1
+batch_size: 8
+beta: 0.75
+ckpt_pretrained: ''
+coco_names: cfg/data/coco.names
+data_cfg: cfg/data/VOC.yaml
+data_dir: /home/e3da/code/micromind/recipes/object_detection/datasets/VOC
+debug: false
+divisor: 8
+downsampling_layers:
+- 5
+- 7
+epochs: 150
+experiment_name: rgb_clustering
+heads:
+- true
+- true
+- true
+input_shape:
+- 6
+- 640
+- 640
+lr: 0.001
+num_classes: 80
+num_layers: 8
+opt: adam
+output_dir: detection_output
+output_folder: results
+return_layers:
+- 6
+- 8
+t_zero: 5
