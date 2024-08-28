@@ -17,14 +17,124 @@ from ultralytics.utils.torch_utils import (
     smart_inference_mode,
 )
 
-from ultralytics.data import build_dataloader, build_yolo_dataset, converter
+from ultralytics.data import build_dataloader, converter
 from ultralytics.utils import ops
 from ultralytics.utils.checks import check_requirements
 from ultralytics.utils.metrics import ConfusionMatrix, DetMetrics, box_iou
 from ultralytics.utils.plotting import output_to_target, plot_images
 
 from .autobackend import AutoBackend
+from .datasets import build_yolo_dataset
 
+from .utils.canny import Net
+from .utils.clustering import KMeans
+from ultralytics import YOLO as YOLOseg
+from torch.autograd import Variable
+
+def grayscale(batch):
+    with torch.no_grad():
+        gray_images = 0.299 * batch[:, 0, :, :] + 0.587 * batch[:, 1, :, :] + 0.114 * batch[:, 2, :, :]
+        gray_images = gray_images.unsqueeze(1)
+    return gray_images
+
+def rgb_to_hsv(batch):
+    with torch.no_grad():
+        r, g, b = batch[:, 0, :, :], batch[:, 1, :, :], batch[:, 2, :, :]
+        max_rgb, _ = torch.max(batch, dim=1)
+        min_rgb, _ = torch.min(batch, dim=1)
+        delta = max_rgb - min_rgb
+        hue = torch.zeros_like(max_rgb)
+        mask = delta != 0
+        hue[mask & (max_rgb == r)] = (60 * (g[mask & (max_rgb == r)] - b[mask & (max_rgb == r)]) / delta[mask & (max_rgb == r)]) % 360
+        hue[mask & (max_rgb == g)] = (60 * (b[mask & (max_rgb == g)] - r[mask & (max_rgb == g)]) / delta[mask & (max_rgb == g)]) + 120
+        hue[mask & (max_rgb == b)] = (60 * (r[mask & (max_rgb == b)] - g[mask & (max_rgb == b)]) / delta[mask & (max_rgb == b)]) + 240
+        hue = hue / 360.0
+        saturation = torch.zeros_like(max_rgb)
+        saturation[max_rgb != 0] = delta[max_rgb != 0] / max_rgb[max_rgb != 0]
+        value = max_rgb
+        hsv_images = torch.stack([hue, saturation, value], dim=1)
+    return hsv_images
+
+def canny(batch, device, use_cuda=True):
+    canny_images = []
+    net = Net(threshold=3.0, use_cuda=use_cuda)
+    if use_cuda:
+        net.cuda()
+    net.eval()
+    
+    batch = batch.to(device)
+    with torch.no_grad():
+        for i in range(len(batch)):
+            #data = Variable(batch[i].unsqueeze(0)).to(device)
+            data = batch[i].unsqueeze(0)
+            canny_tensor = net(data)[4]  # the thresholded one
+            canny_tensor /= canny_tensor.max()
+            canny_images.append(canny_tensor)
+    
+    return torch.cat(canny_images, dim=0)
+
+def segment(batch):
+    segmentation_model = YOLOseg("yolov8n-seg.pt")
+    results = []
+    with torch.no_grad():
+        for i in range(len(batch)):
+            result = segmentation_model(batch[i].unsqueeze(0), verbose=False)
+            try:
+                result = torch.any(result[0].masks.data, dim=0, keepdim=True)
+            except AttributeError:
+                result = torch.zeros((1, *batch[i].shape[1:]), dtype=torch.bool)
+            results.append(result)
+
+    for i in range(len(results)):
+        results[i] = results[i].to(batch.device)
+    segmented_batch = torch.cat(results, dim=0).unsqueeze(1).float()
+
+    return segmented_batch
+
+def kmeans_clustering(batch, device, k=3, n_iters=10):
+    results = []
+    batch = batch.to(device)
+    with torch.no_grad():
+        for i in range(len(batch)):
+            shape = batch[i].shape
+            pixels = batch[i].permute(1, 2, 0).reshape(-1, 3)
+            kmeans = KMeans(X=pixels, k=k, n_iters=n_iters, p=2)
+            kmeans.train(pixels)
+            labels = kmeans.predict(pixels)
+            segmented_image = kmeans.train_pts[labels]
+            segmented_image = segmented_image.reshape(shape[1], shape[2], shape[0]).permute(2, 0, 1)
+            if torch.isnan(segmented_image).all():
+                segmented_image = torch.zeros_like(segmented_image)
+            results.append(segmented_image)
+
+    clustered_batch = torch.stack(results, dim=0)
+    return clustered_batch
+
+
+# batch["img"] uint8 non normalizzato.
+# - uint8 -> float16
+# - normalize
+# - preprocess
+# - un-normalize
+# - float16 -> uint8
+def preprocess_batch(batch):
+
+    batch = batch.to(torch.float16)
+    batch = batch / 255.0
+
+    hsv_batch = rgb_to_hsv(batch)
+    grayscale_batch = grayscale(batch)
+    canny_batch = canny(batch, device="cuda:0").detach()
+    segmented_batch = segment(batch).to(batch.device)
+    clustered_batch = kmeans_clustering(batch, device="cuda:0").detach()
+
+    # NOTE: this is to modify based on the type of experiment you decide to evaluate. 
+    # NOTE: This needs to be coherent with the `input_shape` parameter inside the `cfg/yolo_phinet.py` file.
+    final_batch = torch.cat((batch.to("cuda"), hsv_batch, grayscale_batch, canny_batch, segmented_batch, clustered_batch), dim=1)
+
+    final_batch = final_batch * 255.0
+    final_batch = final_batch.to(torch.uint8)
+    return final_batch
 
 class BaseValidator:
     """
@@ -190,6 +300,10 @@ class BaseValidator:
         self.init_metrics(de_parallel(model))
         self.jdict = []  # empty before each val
         for batch_i, batch in enumerate(bar):
+
+            batch["img"] = preprocess_batch(batch["img"])
+            batch["img"] = batch["img"].to(torch.uint8)  # for transformations if used
+
             self.run_callbacks("on_val_batch_start")
             self.batch_i = batch_i
             # Preprocess
@@ -403,7 +517,13 @@ class DetectionValidator(BaseValidator):
     """
 
     def __init__(
-        self, dataloader=None, save_dir=None, pbar=None, args=None, _callbacks=None
+        self,
+        dataloader=None,
+        save_dir=None,
+        pbar=None,
+        args=None,
+        _callbacks=None,
+        transformations=None,
     ):
         """Initialize detection model with necessary variables and settings."""
         super().__init__(dataloader, save_dir, pbar, args, _callbacks)
@@ -415,6 +535,7 @@ class DetectionValidator(BaseValidator):
         self.iouv = torch.linspace(0.5, 0.95, 10)  # iou vector for mAP@0.5:0.95
         self.niou = self.iouv.numel()
         self.lb = []  # for autolabelling
+        self.transformations = transformations
 
     def preprocess(self, batch):
         """Preprocesses batch of images for YOLO training."""
@@ -657,14 +778,20 @@ class DetectionValidator(BaseValidator):
                 Defaults to None.
         """
         return build_yolo_dataset(
-            self.args, img_path, batch, self.data, mode=mode, stride=self.stride
+            self.args,
+            img_path,
+            batch,
+            self.data,
+            mode=mode,
+            stride=self.stride,
+            transformations=self.transformations,
         )
 
     def get_dataloader(self, dataset_path, batch_size):
         """Construct and return dataloader."""
         dataset = self.build_dataset(dataset_path, batch=batch_size, mode="val")
         return build_dataloader(
-            dataset, batch_size, self.args.workers, shuffle=False, rank=-1
+            dataset, batch_size, 0, shuffle=False, rank=-1
         )  # return dataloader
 
     def plot_val_samples(self, batch, ni):
