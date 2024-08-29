@@ -31,6 +31,7 @@ pip install -e .
 
 Install the extra requirements for the object detection recipe:
 ```
+cd recipes/object_detection
 pip install -r extra_requirements
 ```
 
